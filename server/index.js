@@ -41,14 +41,14 @@ RED FLAGS:
 - Role is not compliance, governance, GRC or AI governance related
 `;
 
-// Title keyword filter - drop anything that's clearly not relevant
 const RELEVANT_TITLE_KEYWORDS = [
   'compliance', 'governance', 'risk', 'grc', 'assurance',
   'regulatory', 'ai governance', 'data protection', 'privacy',
-  'information security', 'cyber', 'audit'
+  'information security', 'cyber', 'audit', 'ethics'
 ];
 
 function isTitleRelevant(title) {
+  if (!title) return false;
   const lower = title.toLowerCase();
   return RELEVANT_TITLE_KEYWORDS.some(keyword => lower.includes(keyword));
 }
@@ -58,41 +58,100 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'Job Dashboard API is running' });
 });
 
-// Quick Claude score for filtering
-async function quickScore(job) {
+// Fetch from Reed
+async function fetchReed(keywords) {
+  try {
+    const response = await axios.get(
+      'https://www.reed.co.uk/api/1.0/search',
+      {
+        auth: { username: process.env.REED_API_KEY, password: '' },
+        params: { keywords, fullTime: true, resultsToTake: 10 }
+      }
+    );
+    return response.data.results.map(job => ({
+      id: `reed_${job.jobId}`,
+      title: job.jobTitle,
+      company: job.employerName || 'Unknown',
+      location: job.locationName || 'Unknown',
+      salary_min: job.minimumSalary,
+      salary_max: job.maximumSalary,
+      description: job.jobDescription,
+      url: job.jobUrl,
+      created: job.date,
+      source: 'Reed',
+    }));
+  } catch (e) {
+    console.log('Reed fetch failed:', e.message);
+    return [];
+  }
+}
+
+// Fetch from Jooble
+async function fetchJooble(keywords) {
   try {
     const response = await axios.post(
-      'https://api.anthropic.com/v1/messages',
+      `https://jooble.org/api/${process.env.JOOBLE_API_KEY}`,
       {
-        model: 'claude-sonnet-4-5',
-        max_tokens: 200,
-        messages: [{
-          role: 'user',
-          content: `${MARK_PROFILE}
+        keywords: keywords,
+        location: 'United Kingdom',
+        page: 1,
+        resultonpage: 10,
+      }
+    );
+    return (response.data.jobs || []).map(job => ({
+      id: `jooble_${job.id}`,
+      title: job.title,
+      company: job.company || 'Unknown',
+      location: job.location || 'Unknown',
+      salary_min: null,
+      salary_max: null,
+      description: job.snippet,
+      url: job.link,
+      created: job.updated,
+      source: 'Jooble',
+    }));
+  } catch (e) {
+    console.log('Jooble fetch failed:', e.message);
+    return [];
+  }
+}
 
-Score this job for Mark on a scale of 1-10. Reply with ONLY a JSON object like {"score": 7}.
-
-Job Title: ${job.title}
-Company: ${job.company}
-Location: ${job.location}
-Salary: ${job.salary_min ? '£' + job.salary_min : 'Not stated'}
-Description: ${job.description?.substring(0, 400)}`
-        }]
+// Fetch from TheirStack
+async function fetchTheirStack(titlePatterns) {
+  try {
+    const response = await axios.post(
+      'https://api.theirstack.com/v1/jobs/search',
+      {
+        page: 0,
+        limit: 10,
+        job_title_or: titlePatterns,
+        job_country_code_or: ['GB'],
+        posted_at_max_age_days: 30,
+        job_seniority_or: ['c_level', 'staff', 'senior'],
+        employment_statuses_or: ['full_time'],
       },
       {
         headers: {
+          'Authorization': `Bearer ${process.env.THEIRSTACK_API_KEY}`,
           'Content-Type': 'application/json',
-          'x-api-key': process.env.ANTHROPIC_API_KEY,
-          'anthropic-version': '2023-06-01'
         }
       }
     );
-    const text = response.data.content[0].text;
-    const clean = text.replace(/```json|```/g, '').trim();
-    const result = JSON.parse(clean);
-    return result.score || 0;
+    return (response.data.data || []).map(job => ({
+      id: `ts_${job.id}`,
+      title: job.job_title,
+      company: job.company || 'Unknown',
+      location: job.location || 'Unknown',
+      salary_min: job.min_annual_salary,
+      salary_max: job.max_annual_salary,
+      description: job.description?.substring(0, 500),
+      url: job.url || job.final_url,
+      created: job.date_posted,
+      source: 'TheirStack',
+    }));
   } catch (e) {
-    return 0;
+    console.log('TheirStack fetch failed:', e.message);
+    return [];
   }
 }
 
@@ -100,127 +159,83 @@ Description: ${job.description?.substring(0, 400)}`
 app.get('/api/jobs/search', async (req, res) => {
   try {
     const { keywords = 'compliance director' } = req.query;
-    const apiKey = process.env.REED_API_KEY;
 
-    const response = await axios.get(
-      'https://www.reed.co.uk/api/1.0/search',
-      {
-        auth: {
-          username: apiKey,
-          password: ''
-        },
-        params: {
-          keywords: keywords,
-          fullTime: true,
-          resultsToTake: 20,
-        }
-      }
-    );
+    const [reedJobs, joobleJobs] = await Promise.all([
+      fetchReed(keywords),
+      fetchJooble(keywords),
+    ]);
 
-    const jobs = response.data.results
-      .map(job => ({
-        id: job.jobId,
-        title: job.jobTitle,
-        company: job.employerName || 'Unknown',
-        location: job.locationName || 'Unknown',
-        salary_min: job.minimumSalary,
-        salary_max: job.maximumSalary,
-        description: job.jobDescription,
-        url: job.jobUrl,
-        created: job.date,
-      }))
+    const all = [...reedJobs, ...joobleJobs]
       .filter(job => isTitleRelevant(job.title));
 
-    res.json({ count: jobs.length, jobs });
+    res.json({ count: all.length, jobs: all });
   } catch (error) {
-    console.error(error.response?.data || error.message);
+    console.error(error.message);
     res.status(500).json({ error: 'Failed to fetch jobs' });
   }
 });
 
-// Scan curated searches with title filter and Claude scoring
+// Scan curated searches across all sources
 app.get('/api/jobs/scan', async (req, res) => {
   try {
-    const apiKey = process.env.REED_API_KEY;
-
-    const searches = [
-      { label: 'Head of Compliance', keywords: 'head of compliance' },
-      { label: 'Director GRC', keywords: 'director governance risk compliance' },
-      { label: 'AI Governance', keywords: 'AI governance director' },
-      { label: 'Head of Governance', keywords: 'head of governance assurance' },
-      { label: 'Chief Compliance Officer', keywords: 'chief compliance officer' },
-      { label: 'VP Compliance', keywords: 'VP compliance governance' },
-      { label: 'Director Risk', keywords: 'director risk compliance technology' },
-      { label: 'Head of Risk', keywords: 'head of risk governance' },
+    const reedSearches = [
+      'head of compliance',
+      'director governance risk compliance',
+      'chief compliance officer',
+      'head of governance assurance',
     ];
 
-    const rawResults = [];
+    const joobleSearches = [
+      'Head of Compliance Director',
+      'Director GRC governance',
+      'AI Governance Director',
+      'Chief Compliance Officer',
+    ];
 
-    for (const search of searches) {
-      try {
-        const response = await axios.get(
-          'https://www.reed.co.uk/api/1.0/search',
-          {
-            auth: {
-              username: apiKey,
-              password: ''
-            },
-            params: {
-              keywords: search.keywords,
-              fullTime: true,
-              resultsToTake: 5,
-            }
-          }
-        );
+    const theirStackTitles = [
+      'Head of Compliance',
+      'Director of Compliance',
+      'Chief Compliance Officer',
+      'Director of Governance',
+      'Head of Governance',
+      'AI Governance Director',
+      'Director GRC',
+    ];
 
-        const jobs = response.data.results
-          .map(job => ({
-            id: job.jobId,
-            title: job.jobTitle,
-            company: job.employerName || 'Unknown',
-            location: job.locationName || 'Unknown',
-            salary_min: job.minimumSalary,
-            salary_max: job.maximumSalary,
-            description: job.jobDescription,
-            url: job.jobUrl,
-            created: job.date,
-            searchLabel: search.label,
-          }))
-          .filter(job => isTitleRelevant(job.title));
+    console.log('Fetching from all sources...');
 
-        rawResults.push(...jobs);
-        await new Promise(r => setTimeout(r, 300));
-      } catch (e) {
-        console.log(`Failed search: ${search.label}`);
-      }
+    // Fetch all sources in parallel
+    const [theirStackJobs, ...reedResults] = await Promise.all([
+      fetchTheirStack(theirStackTitles),
+      ...reedSearches.map(kw => fetchReed(kw)),
+    ]);
+
+    const joobleResults = [];
+    for (const kw of joobleSearches) {
+      const jobs = await fetchJooble(kw);
+      joobleResults.push(...jobs);
+      await new Promise(r => setTimeout(r, 300));
     }
+
+    const allJobs = [
+      ...theirStackJobs,
+      ...reedResults.flat(),
+      ...joobleResults,
+    ];
 
     // Deduplicate by id
     const seen = new Set();
-    const unique = rawResults.filter(job => {
+    const unique = allJobs.filter(job => {
       if (seen.has(job.id)) return false;
       seen.add(job.id);
       return true;
     });
 
-    console.log(`${unique.length} relevant jobs after title filter, scoring with Claude...`);
+    // Title filter
+    const relevant = unique.filter(job => isTitleRelevant(job.title));
 
-    // Score each job with Claude and filter to 6+
-    const scored = [];
-    for (const job of unique) {
-      const score = await quickScore(job);
-      console.log(`${job.title} at ${job.company}: ${score}/10`);
-      if (score >= 6) {
-        scored.push({ ...job, claudeScore: score });
-      }
-      await new Promise(r => setTimeout(r, 200));
-    }
-
-    // Sort by score descending
-    scored.sort((a, b) => b.claudeScore - a.claudeScore);
-
-    console.log(`${scored.length} jobs passed Claude filter`);
-    res.json(scored);
+    console.log(`${relevant.length} relevant jobs from all sources`);
+    res.json(relevant);
   } catch (error) {
     console.error(error.message);
     res.status(500).json({ error: 'Scan failed' });
@@ -253,6 +268,7 @@ Company: ${job.company}
 Location: ${job.location}
 Salary: ${job.salary_min ? '£' + job.salary_min + ' - £' + job.salary_max : 'Not stated'}
 Description: ${job.description?.substring(0, 800)}
+Source: ${job.source}
 
 Respond in this exact JSON format:
 {
