@@ -1,6 +1,7 @@
 import { useState } from 'react';
-import ReactMarkdown from 'react-markdown';
 import './App.css';
+
+const API = process.env.REACT_APP_API_URL || 'http://localhost:3002';
 
 function App() {
   const [keywords, setKeywords] = useState('');
@@ -21,7 +22,7 @@ function App() {
     if (!keywords) return;
     setLoading(true);
     try {
-      const response = await fetch(`http://localhost:3002/api/jobs/search?keywords=${encodeURIComponent(keywords)}`);
+      const response = await fetch(`${API}/api/jobs/search?keywords=${encodeURIComponent(keywords)}`);
       const data = await response.json();
       setJobs(data.jobs || []);
     } catch (err) {
@@ -33,7 +34,7 @@ function App() {
   const scanJobs = async () => {
     setScanLoading(true);
     try {
-      const response = await fetch('http://localhost:3002/api/jobs/scan');
+      const response = await fetch(`${API}/api/jobs/scan`);
       const data = await response.json();
       setScannedJobs(data);
     } catch (err) {
@@ -48,7 +49,7 @@ function App() {
     setAnalysisLoading(true);
     setActiveTab('analyse');
     try {
-      const response = await fetch('http://localhost:3002/api/jobs/analyse', {
+      const response = await fetch(`${API}/api/jobs/analyse`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ job })
@@ -97,7 +98,7 @@ function App() {
     return `${days} days ago`;
   };
 
-  const JobCard = ({ job, showAnalyse = true }) => (
+  const JobCard = ({ job }) => (
     <div className="job-card">
       <div className="job-card-header">
         <div>
@@ -113,11 +114,9 @@ function App() {
       </div>
       <p className="job-description">{job.description?.substring(0, 150)}...</p>
       <div className="job-actions">
-        {showAnalyse && (
-          <button className="analyse-btn" onClick={() => analyseJob(job)}>
-            🤖 Analyse for me
-          </button>
-        )}
+        <button className="analyse-btn" onClick={() => analyseJob(job)}>
+          🤖 Analyse for me
+        </button>
         <button className="save-btn" onClick={() => saveJob(job)}>
           📌 Save
         </button>
