@@ -13,30 +13,34 @@ const PROFILE = [
   "Seeking Director or Head of Compliance/Governance/GRC/Operations roles. Tech sector background.",
   "Based in Bradford, West Yorkshire.",
   "LOCATION PRIORITY: Northern England (Yorkshire, Leeds, Manchester, Sheffield, Liverpool,",
-  "Newcastle, M62 corridor) or fully remote UK roles.",
-  "London-only or South East office-based roles are low priority.",
+  "Newcastle, M62 corridor), hybrid roles, or fully remote UK roles.",
+  "London-only or South East office-only roles are low priority but still show them.",
   "SALARY: minimum 110000 GBP. Roles below this should score lower.",
   "NOT interested in: financial services specialist compliance, SOX/Big Four audit,",
   "or legal roles requiring solicitor qualifications.",
-  "SCORING GUIDE: add 10 points for northern England or remote-first.",
-  "Deduct 15 points for London/South East office-only.",
+  "SCORING GUIDE: add 10 points for northern England, hybrid, or remote-first.",
+  "Deduct 10 points for London/South East office-only.",
   "Deduct 15 points if salary appears below 110k GBP.",
   "Deduct 20 points for financial services only."
 ].join(" ");
 
 const SEARCH_QUERIES = [
-  "Director Compliance technology remote UK salary 110000",
-  "Head Governance Risk Compliance Yorkshire Manchester Leeds director",
-  "Head Compliance AI governance technology remote UK 110k",
-  "Director Information Security Governance remote UK north",
-  "Head GRC technology northern England remote 2025",
-  "Head Compliance automation technology remote UK senior",
-  "GRC AI governance director remote UK north",
-  "Compliance Transformation director remote northern England",
-  "Director Governance Technology Leeds Manchester Sheffield remote",
-  "Compliance CISO director technology UK remote 110k",
-  "Head Operations regulated tech remote UK north England",
-  "COO scale-up technology remote UK north England salary",
+  "Director of Compliance technology UK 2025",
+  "Head of Compliance remote hybrid UK",
+  "Head of GRC technology UK director",
+  "Director Governance Risk Compliance UK",
+  "Head of Compliance AI governance UK",
+  "Compliance Transformation director UK",
+  "Director Information Security Governance UK",
+  "Head of Compliance automation technology UK",
+  "GRC AI governance director UK",
+  "Director Governance Technology UK",
+  "Head of Compliance hybrid remote UK 110k",
+  "COO Head of Operations technology UK remote hybrid",
+  "Chief Compliance Officer technology UK",
+  "Head of Risk Compliance technology UK",
+  "Director GRC hybrid remote UK",
+  "AI Governance director UK technology",
 ];
 
 function loadData() {
@@ -58,23 +62,38 @@ function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+async function validateUrl(url) {
+  if (!url) return false;
+  try {
+    const response = await fetch(url, {
+      method: "HEAD",
+      signal: AbortSignal.timeout(5000),
+      headers: { "User-Agent": "Mozilla/5.0" },
+    });
+    return response.status < 400;
+  } catch (e) {
+    return false;
+  }
+}
+
 async function searchQuery(query) {
   const prompt = [
     "Search for: \"" + query + "\".",
     "Find 2-3 real, currently advertised Director or Head-level",
     "Compliance, Governance, GRC, Operations, or COO roles in the UK.",
-    "Prioritise roles in northern England or that are fully remote.",
+    "Include remote, hybrid, and office-based roles across all UK locations.",
     "Prioritise roles paying 110000 GBP or above.",
     "Return ONLY a valid JSON array with no other text, markdown, or backticks.",
     "Each object must have exactly these fields:",
     "id (short slug string), title (string), company (string), location (string),",
     "salary (string, show range if known or Not specified),",
-    "url (string, the direct job posting URL),",
+    "url (string, the EXACT direct job posting URL you found in search results - must be a real working URL),",
     "summary (string, 2 sentences describing the role),",
     "fitScore (integer 0-100 scored against this profile: " + PROFILE + "),",
     "tags (array of 3-4 skill keyword strings).",
     "Director/Head/VP/COO level only. Score honestly.",
-    "London-only office roles score below 55. Financial-services-only roles score below 40."
+    "Financial-services-only roles score below 40.",
+    "IMPORTANT: only include jobs where you found a real URL in search results. Do not invent URLs."
   ].join(" ");
 
   const response = await fetch("https://api.anthropic.com/v1/messages", {
@@ -87,7 +106,7 @@ async function searchQuery(query) {
     body: JSON.stringify({
       model: "claude-sonnet-4-5",
       max_tokens: 1000,
-      system: "You are a job search assistant. You must respond with ONLY a valid JSON array. No explanation, no markdown, no preamble. Just the JSON array starting with [ and ending with ].",
+      system: "You are a job search assistant. You must respond with ONLY a valid JSON array. No explanation, no markdown, no preamble. Just the JSON array starting with [ and ending with ]. Only include jobs where you found real, working URLs in your search results.",
       tools: [{ type: "web_search_20250305", name: "web_search" }],
       messages: [{ role: "user", content: prompt }],
     }),
@@ -105,16 +124,11 @@ async function searchQuery(query) {
     .map(b => b.text)
     .join("");
 
-  console.log("[scanner] Content types:", JSON.stringify((data.content || []).map(b => b.type)));
-  console.log("[scanner] Raw response snippet:", text.substring(0, 300));
-
   try {
     const clean = text.replace(/```json|```/g, "").trim();
     const match = clean.match(/\[[\s\S]*\]/);
     if (match) {
       return JSON.parse(match[0]);
-    } else {
-      console.log("[scanner] No JSON array found in response");
     }
   } catch (e) {
     console.error("[scanner] JSON parse error:", e.message);
@@ -137,7 +151,7 @@ async function runScan() {
     try {
       const results = await searchQuery(query);
       allFound = allFound.concat(results);
-      console.log("[scanner] Got " + results.length + " results");
+      console.log("[scanner] Got " + results.length + " raw results");
     } catch (e) {
       console.error("[scanner] Query failed:", e.message);
     }
@@ -146,20 +160,31 @@ async function runScan() {
 
   const seenThisScan = new Set();
   let newCount = 0;
+  let skippedCount = 0;
   const fresh = [];
 
-  allFound.forEach(job => {
-    if (!job.title || !job.company) return;
-    if (job.url && existingUrls.has(job.url)) return;
+  for (const job of allFound) {
+    if (!job.title || !job.company) continue;
+    if (job.url && existingUrls.has(job.url)) continue;
     const key = job.title + "|" + job.company;
-    if (existingKeys.has(key) || seenThisScan.has(key)) return;
+    if (existingKeys.has(key) || seenThisScan.has(key)) continue;
+
+    if (job.url) {
+      const valid = await validateUrl(job.url);
+      if (!valid) {
+        console.log("[scanner] Skipping " + job.title + " at " + job.company + " - URL invalid");
+        skippedCount++;
+        continue;
+      }
+    }
+
     seenThisScan.add(key);
     job.id = job.id || (Date.now() + "-" + Math.random().toString(36).substr(2, 5));
     job.isNew = true;
     job.foundAt = new Date().toISOString();
     fresh.push(job);
     newCount++;
-  });
+  }
 
   const updated = {
     jobs: [...fresh, ...existing.jobs],
@@ -168,7 +193,7 @@ async function runScan() {
   };
 
   saveData(updated);
-  console.log("[scanner] Scan complete. " + newCount + " new roles found. Total: " + updated.jobs.length);
+  console.log("[scanner] Scan complete. " + newCount + " new roles added, " + skippedCount + " skipped (bad URLs). Total: " + updated.jobs.length);
 }
 
 runScan();
