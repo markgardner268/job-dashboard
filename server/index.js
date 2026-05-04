@@ -2,6 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
 const path = require('path');
+const fs = require('fs');
 require('dotenv').config();
 
 const app = express();
@@ -53,12 +54,10 @@ function isTitleRelevant(title) {
   return RELEVANT_TITLE_KEYWORDS.some(keyword => lower.includes(keyword));
 }
 
-// Health check
 app.get('/api/health', (req, res) => {
   res.json({ status: 'Job Dashboard API is running' });
 });
 
-// Fetch from Reed
 async function fetchReed(keywords) {
   try {
     const response = await axios.get(
@@ -86,7 +85,6 @@ async function fetchReed(keywords) {
   }
 }
 
-// Fetch from Jooble
 async function fetchJooble(keywords) {
   try {
     const response = await axios.post(
@@ -116,7 +114,6 @@ async function fetchJooble(keywords) {
   }
 }
 
-// Fetch from TheirStack
 async function fetchTheirStack(titlePatterns) {
   try {
     const response = await axios.post(
@@ -155,19 +152,14 @@ async function fetchTheirStack(titlePatterns) {
   }
 }
 
-// Search jobs
 app.get('/api/jobs/search', async (req, res) => {
   try {
     const { keywords = 'compliance director' } = req.query;
-
     const [reedJobs, joobleJobs] = await Promise.all([
       fetchReed(keywords),
       fetchJooble(keywords),
     ]);
-
-    const all = [...reedJobs, ...joobleJobs]
-      .filter(job => isTitleRelevant(job.title));
-
+    const all = [...reedJobs, ...joobleJobs].filter(job => isTitleRelevant(job.title));
     res.json({ count: all.length, jobs: all });
   } catch (error) {
     console.error(error.message);
@@ -175,7 +167,6 @@ app.get('/api/jobs/search', async (req, res) => {
   }
 });
 
-// Scan curated searches across all sources
 app.get('/api/jobs/scan', async (req, res) => {
   try {
     const reedSearches = [
@@ -184,14 +175,12 @@ app.get('/api/jobs/scan', async (req, res) => {
       'chief compliance officer',
       'head of governance assurance',
     ];
-
     const joobleSearches = [
       'Head of Compliance Director',
       'Director GRC governance',
       'AI Governance Director',
       'Chief Compliance Officer',
     ];
-
     const theirStackTitles = [
       'Head of Compliance',
       'Director of Compliance',
@@ -202,9 +191,6 @@ app.get('/api/jobs/scan', async (req, res) => {
       'Director GRC',
     ];
 
-    console.log('Fetching from all sources...');
-
-    // Fetch all sources in parallel
     const [theirStackJobs, ...reedResults] = await Promise.all([
       fetchTheirStack(theirStackTitles),
       ...reedSearches.map(kw => fetchReed(kw)),
@@ -217,24 +203,14 @@ app.get('/api/jobs/scan', async (req, res) => {
       await new Promise(r => setTimeout(r, 300));
     }
 
-    const allJobs = [
-      ...theirStackJobs,
-      ...reedResults.flat(),
-      ...joobleResults,
-    ];
-
-    // Deduplicate by id
+    const allJobs = [...theirStackJobs, ...reedResults.flat(), ...joobleResults];
     const seen = new Set();
     const unique = allJobs.filter(job => {
       if (seen.has(job.id)) return false;
       seen.add(job.id);
       return true;
     });
-
-    // Title filter
     const relevant = unique.filter(job => isTitleRelevant(job.title));
-
-    console.log(`${relevant.length} relevant jobs from all sources`);
     res.json(relevant);
   } catch (error) {
     console.error(error.message);
@@ -242,11 +218,9 @@ app.get('/api/jobs/scan', async (req, res) => {
   }
 });
 
-// AI full analysis of a job
 app.post('/api/jobs/analyse', async (req, res) => {
   try {
     const { job } = req.body;
-
     const response = await axios.post(
       'https://api.anthropic.com/v1/messages',
       {
@@ -288,7 +262,6 @@ Respond in this exact JSON format:
         }
       }
     );
-
     const text = response.data.content[0].text;
     const clean = text.replace(/```json|```/g, '').trim();
     const analysis = JSON.parse(clean);
@@ -296,6 +269,20 @@ Respond in this exact JSON format:
   } catch (error) {
     console.error(error.response?.data || error.message);
     res.status(500).json({ error: 'Analysis failed' });
+  }
+});
+
+app.get('/api/jobs', (req, res) => {
+  try {
+    const dataFile = path.join(__dirname, '../jobs-data.json');
+    if (fs.existsSync(dataFile)) {
+      const data = JSON.parse(fs.readFileSync(dataFile, 'utf8'));
+      res.json(data);
+    } else {
+      res.json({ jobs: [], lastScan: null });
+    }
+  } catch (e) {
+    res.status(500).json({ error: 'Failed to read jobs data' });
   }
 });
 
