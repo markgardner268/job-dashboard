@@ -76,9 +76,10 @@ export default function App() {
     persist(savedIds, next);
   }
 
-  const newJobs = allJobs.filter(j => !savedIds.has(j.id) && !dismissedIds.has(j.id));
-  const savedJobs = allJobs.filter(j => savedIds.has(j.id));
-  const dismissedJobs = allJobs.filter(j => dismissedIds.has(j.id));
+  const byScore = (a, b) => (b.fitScore || 0) - (a.fitScore || 0);
+  const newJobs = allJobs.filter(j => !savedIds.has(j.id) && !dismissedIds.has(j.id)).sort(byScore);
+  const savedJobs = allJobs.filter(j => savedIds.has(j.id)).sort(byScore);
+  const dismissedJobs = allJobs.filter(j => dismissedIds.has(j.id)).sort(byScore);
   const visible = tab === 'new' ? newJobs : tab === 'saved' ? savedJobs : dismissedJobs;
 
   const tabs = [
@@ -142,8 +143,9 @@ export default function App() {
           const isSaved = savedIds.has(job.id);
           return (
             <div key={job.id} style={{
-              background: '#fff', border: job.isNew ? '1px solid #e5e5e5' : '1px solid #e5e5e5',
+              background: '#fff',
               borderLeft: job.isNew ? '3px solid #3b82f6' : '1px solid #e5e5e5',
+              border: '1px solid #e5e5e5',
               borderRadius: 12, padding: '1rem 1.25rem', position: 'relative',
             }}>
               {job.isNew && (
