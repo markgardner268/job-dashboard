@@ -87,6 +87,7 @@ async function searchQuery(query) {
     body: JSON.stringify({
       model: "claude-sonnet-4-5",
       max_tokens: 1000,
+      system: "You are a job search assistant. You must respond with ONLY a valid JSON array. No explanation, no markdown, no preamble. Just the JSON array starting with [ and ending with ].",
       tools: [{ type: "web_search_20250305", name: "web_search" }],
       messages: [{ role: "user", content: prompt }],
     }),
@@ -140,7 +141,7 @@ async function runScan() {
     } catch (e) {
       console.error("[scanner] Query failed:", e.message);
     }
-    if (i < SEARCH_QUERIES.length - 1) await sleep(2000);
+    if (i < SEARCH_QUERIES.length - 1) await sleep(10000);
   }
 
   const seenThisScan = new Set();
